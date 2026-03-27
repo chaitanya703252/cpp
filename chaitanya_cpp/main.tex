@@ -1,0 +1,347 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{tabularx}
+
+% Code listing style
+\lstdefinestyle{codestyle}{
+    backgroundcolor=\color{gray!10},
+    basicstyle=\ttfamily\scriptsize,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{red!70!black},
+    showstringspaces=false,
+    tabsize=2
+}
+\lstset{style=codestyle}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{LeaveFlow: A Serverless Cloud-Based Employee Leave Request Management System on AWS}
+
+\author{\IEEEauthorblockN{Kondragunta Lakshmi Chaitanya}
+\IEEEauthorblockA{Student ID: X25171216 \\
+MSc in Cloud Computing \\
+National College of Ireland, Dublin \\
+chaitanya.kondragunta@student.ncirl.ie}}
+
+\maketitle
+
+% ============================================================
+% ABSTRACT
+% ============================================================
+\begin{abstract}
+This paper presents the design, implementation, and deployment of LeaveFlow, a serverless cloud-based employee leave request management system hosted on Amazon Web Services. The application enables employees and managers to manage the complete lifecycle of leave requests through a role-based web interface, encompassing leave submission with balance validation and overlap detection, manager approval and rejection workflows, leave balance tracking with automatic deduction and restoration, and team calendar visibility. The system leverages six AWS services programmatically, namely AWS Lambda for serverless compute, Amazon DynamoDB for NoSQL data storage, Amazon API Gateway for RESTful endpoint routing, Amazon S3 for static website hosting, Amazon Simple Notification Service for leave status notifications, and AWS Identity and Access Management for fine-grained access control. A custom object-oriented Python library called leave-manager-nci was developed, providing leave balance management with predefined allocations (annual: 20 days, sick: 10 days, unpaid: 30 days), date overlap detection between leave requests, leave validation with weekend exclusion in business day calculations, and leave record formatting utilities with 45 automated tests. The application implements a role-based access control model distinguishing between employee and manager roles, with JWT-based authentication governing all API interactions. The approval workflow automatically deducts leave balances upon submission and restores them upon rejection or cancellation, ensuring balance integrity throughout the request lifecycle. A CI/CD pipeline implemented through GitHub Actions automates testing, infrastructure provisioning, and deployment. The results demonstrate that serverless cloud architectures can effectively support human resource workflow applications with complex business rule enforcement and role-based state management.
+\end{abstract}
+
+% ============================================================
+% INTRODUCTION
+% ============================================================
+\section{Introduction}
+
+Employee leave management is a fundamental human resource process that organisations of all sizes must handle efficiently to maintain operational continuity while respecting employee entitlements \cite{cloudpatterns}. Traditional approaches to leave management range from paper-based forms requiring physical signatures to email-based requests that lack structured tracking, audit trails, and automated balance calculations. These manual processes frequently result in scheduling conflicts where multiple team members are absent simultaneously, inaccurate balance tracking due to arithmetic errors or forgotten updates, and delays in approval processing that inconvenience employees planning personal commitments.
+
+The motivation for this project arises from the observation that many small to medium-sized organisations continue to rely on informal leave management processes because commercial human resource management systems are prohibitively expensive or excessively complex for organisations that primarily need streamlined leave request handling. Cloud computing, and specifically the serverless computing paradigm, offers an opportunity to deliver a focused leave management solution with minimal operational cost and zero infrastructure management overhead \cite{serverless}.
+
+The primary objectives of this project are threefold. First, to design and implement a serverless leave request management system with role-based access control distinguishing between employees who submit leave requests and managers who approve or reject them, with JWT-based authentication enforcing access boundaries. Second, to implement comprehensive business rule enforcement including leave balance validation against predefined allocations for three leave types, weekend exclusion in business day calculations, overlap detection to prevent conflicting leave requests, and automatic balance adjustment upon submission, rejection, and cancellation events. Third, to develop a reusable Python library that encapsulates leave management domain logic including balance computation, overlap detection algorithms, and date arithmetic with weekend awareness. The application employs six AWS services programmatically and demonstrates cloud-native architectural patterns including event-driven processing, role-based authorisation, and continuous deployment.
+
+% ============================================================
+% PROJECT SPECIFICATION AND REQUIREMENTS
+% ============================================================
+\section{Project Specification and Requirements}
+
+\subsection{Functional Requirements}
+
+The application satisfies the following functional requirements organised around the two primary user roles. First, the authentication and authorisation subsystem provides user registration and login with role assignment, where users are classified as either employees or managers. Authentication is managed through JWT tokens that encode the user's role and identity, enabling the backend to enforce role-based access control on all API endpoints without maintaining server-side session state.
+
+Second, the leave request submission subsystem enables employees to create leave requests by specifying the leave type (annual, sick, or unpaid), start date, end date, and an optional reason. Upon submission, the system performs three critical validations: it calculates the number of business days requested by excluding weekends from the date range, verifies that the employee's remaining balance for the specified leave type is sufficient to cover the requested days, and checks for date overlap with the employee's existing approved or pending leave requests. If all validations pass, the leave balance is immediately deducted to reflect the pending request, and the request is stored with a ``pending'' status.
+
+Third, the manager approval workflow enables managers to view all pending leave requests from their team, review the request details including the impact on team availability, and either approve or reject each request with optional comments. When a request is approved, its status transitions to ``approved'' and the previously deducted balance remains deducted. When a request is rejected, its status transitions to ``rejected'' and the leave balance is automatically restored to the employee's account. This deduct-on-submit, restore-on-reject pattern prevents the race condition where an employee could submit multiple overlapping requests that individually pass the balance check but collectively exceed the available balance.
+
+Fourth, the cancellation subsystem allows employees to cancel their own pending or approved leave requests, which triggers automatic balance restoration for the cancelled days. This ensures that employees can reclaim their leave entitlements when plans change without requiring manager intervention for balance adjustments.
+
+Fifth, the team calendar subsystem provides managers with a consolidated view of approved and pending leave across their team, enabling informed decision-making when reviewing new requests. The employee dashboard displays the individual's leave balances across all three types, a history of submitted requests with their current statuses, and upcoming approved leave dates.
+
+\subsection{Non-Functional Requirements}
+
+The non-functional requirements address data integrity, security, availability, and cost efficiency. Data integrity is critical for a leave management system, as incorrect balance calculations or lost approval decisions can affect employee entitlements and organisational staffing. The deduct-on-submit pattern combined with atomic DynamoDB operations ensures balance consistency even under concurrent request scenarios \cite{awsdynamodb}. Security is implemented through JWT-based authentication with role claims, IAM least-privilege policies, and CORS restrictions on API Gateway. Availability is ensured through the managed nature of all AWS services within the deployment region. Cost efficiency is achieved through Lambda's pay-per-invocation model and DynamoDB's on-demand billing, which is particularly advantageous for leave management systems that experience brief daily peaks during morning hours when employees submit requests and managers process approvals \cite{awslambda}.
+
+% ============================================================
+% ARCHITECTURE AND DESIGN
+% ============================================================
+\section{Architecture and Design}
+
+LeaveFlow follows a serverless architecture pattern comprising three distinct tiers: a static frontend hosted on Amazon S3, a serverless API layer powered by AWS Lambda and Amazon API Gateway, and a data persistence layer using Amazon DynamoDB \cite{cloudpatterns}. This architecture was selected for its elimination of server management overhead, automatic scaling capabilities, and cost-optimised pay-per-use billing model that suits the predictable, low-volume usage pattern of an organisational leave management system.
+
+The frontend is a single-page React application built with Vite and styled using Tailwind CSS. The compiled static assets are deployed to an S3 bucket configured for static website hosting. The React application communicates with the backend through RESTful API calls with JWT tokens attached to all authenticated requests via the Authorization header. The frontend implements role-aware navigation, displaying different dashboard views and action buttons based on the authenticated user's employee or manager role.
+
+The API layer consists of a single AWS Lambda function that receives all incoming HTTP requests through API Gateway's proxy integration. The Lambda function implements internal routing that dispatches requests to appropriate handlers for authentication, leave request management, approval processing, balance queries, and team calendar operations. The handler validates JWT tokens, extracts role information, and enforces access control before processing each request. The function integrates with DynamoDB for data persistence, SNS for notifications, and imports the leave-manager-nci library for all business rule validation.
+
+The data layer uses Amazon DynamoDB with three tables: a users table keyed by userId storing authentication credentials and role assignments, a leave\_requests table keyed by requestId with a Global Secondary Index on employeeId for efficient retrieval of an individual's leave history, and a leave\_balances table keyed by a composite of userId and leave type that tracks remaining balances for each employee across all three leave categories. DynamoDB was selected over relational alternatives because the leave request data model is self-contained, the primary access patterns involve retrieving individual requests or querying by employee identifier, and conditional writes provide the atomicity required for balance deduction operations \cite{awsdynamodb}.
+
+% ============================================================
+% LIBRARY DESCRIPTION
+% ============================================================
+\section{Leave Manager Library}
+
+The leave-manager-nci library is a custom Python package developed specifically for this project to encapsulate the domain logic of employee leave management. The library follows object-oriented design principles with four primary classes, requiring no external dependencies beyond the Python standard library.
+
+The library provides the following primary components. The \texttt{LeaveBalanceManager} class handles leave balance operations including initialisation with default allocations (annual: 20 days, sick: 10 days, unpaid: 30 days), balance deduction with sufficiency validation, balance restoration on rejection or cancellation, and balance summary generation showing used, remaining, and total days for each leave type. The class raises descriptive exceptions when deduction requests exceed available balances.
+
+The \texttt{OverlapDetector} class implements the date overlap detection algorithm that determines whether a proposed leave request conflicts with existing approved or pending requests. The algorithm compares the start and end dates of the proposed request against all existing requests for the same employee, identifying overlaps where the proposed start date falls within an existing request's range, the proposed end date falls within an existing range, or the proposed request entirely encompasses an existing request. The detector returns both a boolean conflict indicator and a list of conflicting request identifiers for display to the user.
+
+The \texttt{LeaveValidator} class provides comprehensive validation including business day calculation that excludes weekends (Saturdays and Sundays) from the requested date range, leave type validation against the three permitted categories, date range validation ensuring the start date precedes the end date and both dates are in the future, and reason length validation. The weekend exclusion algorithm iterates through each date in the range and counts only weekdays, ensuring that a Monday-to-Friday request for a single week counts as five business days rather than seven calendar days.
+
+The \texttt{LeaveFormatter} class supports multiple output formats for leave records including plain text summaries, JSON strings for API responses, calendar event formats, and balance report tables. The following code snippet demonstrates how the library's core validation and overlap detection are used within the application:
+
+\begin{lstlisting}[language=Python, caption={LeaveValidator and OverlapDetector usage}]
+from leave_manager import (LeaveValidator,
+    OverlapDetector, LeaveBalanceManager)
+
+validator = LeaveValidator()
+detector = OverlapDetector()
+balance_mgr = LeaveBalanceManager()
+
+# Calculate business days excluding weekends
+biz_days = validator.calculate_business_days(
+    start_date="2025-04-07",  # Monday
+    end_date="2025-04-18")    # Friday
+# Returns: 10 (excludes Sat 12, Sun 13)
+
+# Check for overlapping requests
+existing = [
+    {"start": "2025-04-10", "end": "2025-04-11",
+     "status": "approved", "id": "req-001"},
+]
+conflict = detector.check_overlap(
+    start="2025-04-07", end="2025-04-18",
+    existing_requests=existing)
+# Returns: {overlaps: True,
+#           conflicts: ["req-001"]}
+
+# Validate balance sufficiency
+balances = {"annual": 15, "sick": 10, "unpaid": 30}
+can_deduct = balance_mgr.check_balance(
+    balances, leave_type="annual", days=10)
+# Returns: True (15 >= 10)
+\end{lstlisting}
+
+The library includes 45 unit tests implemented with pytest, covering all four classes comprehensively. The test suite validates business day calculations across various date ranges including single-day requests, multi-week spans, and ranges beginning or ending on weekends. Overlap detection is tested with non-overlapping, partially overlapping, fully encompassing, and adjacent date ranges. Balance operations are tested at boundary conditions including exact balance depletion, zero-balance rejection, and restoration after rejection. The test suite executes as a mandatory CI/CD pipeline gate before deployment.
+
+% ============================================================
+% CLOUD SERVICES
+% ============================================================
+\section{Cloud-Based Services}
+
+The application integrates six AWS services, each serving a distinct purpose within the serverless architecture. This section provides a critical analysis and justification for each service selection.
+
+\subsection{AWS Lambda}
+
+AWS Lambda provides the serverless compute environment for the backend API, executing the Python 3.11 handler function in response to API Gateway events \cite{awslambda}. Lambda was selected because a leave management system experiences highly predictable, low-volume traffic concentrated during business hours, making the pay-per-request pricing significantly more economical than maintaining an always-on EC2 instance or Elastic Beanstalk environment. The business day calculation, overlap detection, and balance validation performed by the leave-manager-nci library are computationally trivial, completing in microseconds. The function is configured with 256 MB of memory and a 30-second timeout. Cold start latency is acceptable for a leave management context where sub-second response times are not critical to the user experience.
+
+\subsection{Amazon DynamoDB}
+
+Amazon DynamoDB provides the NoSQL database for storing user accounts, leave requests, and leave balances \cite{awsdynamodb}. The on-demand billing mode is ideal for a leave management system where write volume is concentrated during morning hours and is negligible during evenings and weekends. DynamoDB was selected specifically for its conditional write capabilities, which are essential for the atomic balance deduction operation. A conditional update expression ensures that the balance deduction only succeeds if the current balance is greater than or equal to the requested days, preventing race conditions where concurrent submissions could overdraw the balance. This atomicity guarantee would require explicit transaction management with a relational database but is provided natively by DynamoDB's conditional expressions.
+
+\subsection{Amazon API Gateway}
+
+Amazon API Gateway provides the HTTP endpoint layer with proxy integration to the Lambda function \cite{awsapigateway}. The REST API uses a catch-all resource pattern that delegates all routing decisions to the Lambda handler. API Gateway was selected for its native Lambda integration, built-in CORS handling for the S3-hosted frontend, and request throttling capabilities. The throttling is configured to prevent abuse while accommodating the expected peak of concurrent requests during morning submission hours.
+
+\subsection{Amazon S3}
+
+Amazon S3 hosts the compiled React frontend as a static website \cite{awss3}. The bucket is configured with static website hosting, a public access policy, and index.html as the default document for single-page application routing. S3 was selected for its reliability, simplicity, and cost effectiveness for hosting static web applications. The leave management interface does not require server-side rendering, making S3 static hosting a natural fit that eliminates the need for a web server process.
+
+\subsection{Amazon SNS}
+
+Amazon Simple Notification Service provides the notification infrastructure for leave request status changes \cite{awssns}. When a manager approves or rejects a leave request, the Lambda function publishes a notification to the SNS topic, which delivers an email to the employee informing them of the decision. Similarly, when an employee submits a new request, a notification is sent to the relevant manager for timely review. SNS was selected over SES because the topic-based subscription model aligns well with the manager-employee notification pattern, where managers subscribe to receive all team submission notifications.
+
+\begin{lstlisting}[language=Python, caption={SNS notification on leave approval/rejection}]
+def notify_leave_decision(request, decision, comments):
+    status_text = "APPROVED" if decision == "approved" \
+        else "REJECTED"
+    message = (
+        f"Leave Request {status_text}\n\n"
+        f"Type: {request['leave_type']}\n"
+        f"Dates: {request['start_date']} to "
+        f"{request['end_date']}\n"
+        f"Days: {request['business_days']}\n"
+        f"Decision: {status_text}\n"
+    )
+    if comments:
+        message += f"Comments: {comments}\n"
+    if decision == "rejected":
+        message += (
+            "\nYour leave balance has been "
+            "restored automatically."
+        )
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=f"Leave Request {status_text}",
+        Message=message
+    )
+\end{lstlisting}
+
+\subsection{AWS IAM}
+
+AWS Identity and Access Management defines the Lambda execution role with policies granting access to the three DynamoDB tables (users, leave\_requests, leave\_balances), the SNS topic, and CloudWatch Logs \cite{awsiam}. Each permission is scoped to specific resource ARNs following the principle of least privilege. The DynamoDB permissions include both standard read/write operations and conditional write permissions required for the atomic balance deduction pattern. IAM is the foundational security layer enabling all other AWS service integrations.
+
+% ============================================================
+% IMPLEMENTATION
+% ============================================================
+\section{Implementation}
+
+The implementation follows a clean separation between the frontend React application, the serverless Lambda backend with JWT-based authentication, and the leave-manager-nci library for business rule enforcement. This section documents the implementation of each major component.
+
+\subsection{Backend API and CRUD Operations}
+
+The Lambda function implements role-aware API routes through a path-based routing mechanism. The JWT middleware extracts the user's role and identity from each request, and endpoint handlers verify role requirements before processing. Table~\ref{tab:endpoints} summarises the primary API endpoints.
+
+\begin{table}[H]
+\centering
+\caption{LeaveFlow REST API Endpoints}
+\label{tab:endpoints}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Method} & \textbf{Endpoint} & \textbf{Description} \\
+\hline
+POST & /auth/register & Register user \\
+POST & /auth/login & Login, return JWT \\
+\hline
+POST & /leave-requests & Submit request (emp) \\
+GET & /leave-requests & User's requests \\
+GET & /leave-requests/\{id\} & Request details \\
+DELETE & /leave-requests/\{id\} & Cancel request (emp) \\
+\hline
+GET & /pending-requests & Pending list (mgr) \\
+PUT & /leave-requests/\{id\} & Approve/reject (mgr) \\
+\hline
+GET & /balances & User's balances \\
+GET & /team-calendar & Team calendar (mgr) \\
+GET & /dashboard & Role-based dashboard \\
+\hline
+\end{tabular}
+\end{table}
+
+The most critical implementation detail is the leave submission flow, which coordinates balance validation, overlap detection, balance deduction, and request creation. The deduct-on-submit pattern ensures that the balance reflects all pending and approved requests, preventing overallocation:
+
+\begin{lstlisting}[language=Python, caption={Leave request submission with validation chain}]
+from leave_manager import (LeaveValidator,
+    OverlapDetector, LeaveBalanceManager)
+
+def submit_leave_request(user_id, body):
+    validator = LeaveValidator()
+    detector = OverlapDetector()
+    bal_mgr = LeaveBalanceManager()
+
+    # 1. Calculate business days
+    days = validator.calculate_business_days(
+        body["start_date"], body["end_date"])
+    if days <= 0:
+        return error_response("Invalid date range")
+
+    # 2. Check for overlapping requests
+    existing = get_user_requests(user_id)
+    overlap = detector.check_overlap(
+        body["start_date"], body["end_date"],
+        existing)
+    if overlap["overlaps"]:
+        return error_response("Dates overlap")
+
+    # 3. Check and deduct balance atomically
+    balance = get_balance(user_id, body["leave_type"])
+    if not bal_mgr.check_balance(
+            balance, body["leave_type"], days):
+        return error_response("Insufficient balance")
+
+    deduct_balance(user_id, body["leave_type"], days)
+
+    # 4. Create request record
+    request_id = create_request(
+        user_id, body, days, "pending")
+    notify_manager(user_id, body, days)
+    return success_response({"requestId": request_id})
+\end{lstlisting}
+
+\subsection{Frontend Implementation}
+
+The frontend is implemented as a single-page React application with Vite and Tailwind CSS. The application presents role-differentiated interfaces. Employees see a leave submission form with date pickers and leave type selection, current balance indicators for all three leave types with visual progress bars showing used versus remaining days, a request history table with status badges (pending in amber, approved in green, rejected in red), and upcoming approved leave dates. Managers see a pending requests queue with approve and reject action buttons, a team calendar showing approved and pending leave across all team members with conflict highlighting, and summary statistics including team availability percentages by date.
+
+The leave submission form validates dates client-side before submission, displaying a real-time business day count that updates as the user modifies the date range. The form also displays a warning if the requested days would deplete the balance below a configurable threshold, encouraging employees to preserve buffer days for unforeseen needs.
+
+\subsection{Testing}
+
+The leave-manager-nci library includes 45 automated unit tests covering all four classes. Key test scenarios include business day calculations for ranges spanning one to four weeks with verification of correct weekend exclusion, overlap detection for ten distinct date relationship configurations (no overlap, partial overlap from left, partial overlap from right, complete enclosure, identical ranges, adjacent non-overlapping, and others), balance deduction at exact depletion boundary (requesting exactly the remaining balance), balance restoration correctness after rejection ensuring restored amounts match original deductions, and formatter output verification for all supported formats. The test suite is the mandatory CI/CD gate.
+
+% ============================================================
+% CI/CD AND DEPLOYMENT
+% ============================================================
+\section{Continuous Integration, Delivery and Deployment}
+
+The application source code is maintained in a GitHub repository at \url{https://github.com/chaitanya703252/cpp}. A CI/CD pipeline was implemented using GitHub Actions, triggered on every push to the main branch. The pipeline consists of three sequential jobs.
+
+The first job, \texttt{test-library}, installs the leave-manager-nci library in editable mode and executes the full pytest suite of 45 unit tests. Only upon successful completion of all tests does the pipeline proceed to backend deployment.
+
+The second job, \texttt{deploy-backend}, provisions the complete AWS infrastructure using the AWS CLI. This includes creating three DynamoDB tables (users, leave\_requests, leave\_balances) with on-demand billing, the leave\_requests table having a Global Secondary Index on employeeId for efficient per-employee queries. The job creates the S3 bucket for frontend hosting, the IAM execution role with least-privilege policies for the specific DynamoDB tables, SNS topic, and CloudWatch log group. It creates the SNS topic for leave notification delivery, packages the Lambda function with all dependencies including the leave-manager-nci and PyJWT libraries, and configures API Gateway with proxy integration and CORS support.
+
+The third job, \texttt{deploy-frontend}, retrieves the API Gateway URL from the deployed backend, builds the React application with the API URL injected as an environment variable, and synchronises the compiled assets to the S3 frontend bucket with appropriate cache control headers. All infrastructure creation commands are idempotent, and the pipeline requires only AWS\_ACCESS\_KEY\_ID and AWS\_SECRET\_ACCESS\_KEY as repository secrets.
+
+% ============================================================
+% CONCLUSIONS
+% ============================================================
+\section{Conclusions}
+
+This project successfully demonstrates the development and deployment of a serverless cloud-native application that integrates six AWS services to deliver an employee leave request management system with role-based access control and comprehensive business rule enforcement. LeaveFlow provides employees with leave submission including balance validation and overlap detection, managers with approval and rejection workflows, automatic balance management with deduction and restoration, team calendar visibility, and email notifications on status changes.
+
+Several key findings emerged during the development process. First, the deduct-on-submit, restore-on-reject pattern proved essential for maintaining balance integrity in a system where multiple pending requests can coexist. The alternative approach of deducting only upon approval would create a window where an employee could submit multiple requests that each individually pass the balance check but collectively exceed the available balance. By deducting immediately upon submission, the system ensures that pending requests consume virtual balance, preventing overallocation regardless of the order or timing of manager decisions.
+
+Second, the weekend exclusion algorithm in the business day calculator required careful handling of edge cases, particularly for requests that begin on a Saturday or end on a Sunday. The leave-manager-nci library's iterative date-walking approach, while computationally simple, provides correct results for all edge cases without requiring lookup tables or complex modular arithmetic. For organisations with custom holiday calendars, the library's design allows straightforward extension to exclude additional non-working days.
+
+Third, DynamoDB's conditional write capability proved critical for the atomic balance deduction operation. The conditional expression \texttt{remaining\_days >= :requested} ensures that the deduction only succeeds if the balance is sufficient at the moment of the write, preventing race conditions where concurrent requests could overdraw the balance. This pattern eliminates the need for application-level locking or separate transaction coordination.
+
+The main limitations include the absence of a configurable organisational holiday calendar, which would be essential for accurate business day calculations in different jurisdictions. Additionally, the current implementation assigns all employees to a single manager, whereas a production system would require a hierarchical organisational structure with team assignments. Future enhancements could include integration with calendar applications for automatic out-of-office status setting, carry-over balance policies for unused annual leave, and reporting analytics for managers to identify leave pattern trends across their teams. The serverless architecture provides a cost-effective foundation for these extensions, with the modular leave-manager-nci library ensuring that business logic remains testable and maintainable as the system evolves.
+
+% ============================================================
+% REFERENCES
+% ============================================================
+\begin{thebibliography}{00}
+
+\bibitem{cloudpatterns} C. Richardson, ``Microservices Patterns: With Examples in Java,'' Manning Publications, 2018.
+
+\bibitem{serverless} P. Sbarski, ``Serverless Architectures on AWS: With Examples Using AWS Lambda,'' 2nd ed., Manning Publications, 2022.
+
+\bibitem{awslambda} Amazon Web Services, ``AWS Lambda Developer Guide,'' 2024. [Online]. Available: https://docs.aws.amazon.com/lambda/
+
+\bibitem{awsdynamodb} Amazon Web Services, ``Amazon DynamoDB Developer Guide,'' 2024. [Online]. Available: https://docs.aws.amazon.com/dynamodb/
+
+\bibitem{awsapigateway} Amazon Web Services, ``Amazon API Gateway Developer Guide,'' 2024. [Online]. Available: https://docs.aws.amazon.com/apigateway/
+
+\bibitem{awss3} Amazon Web Services, ``Amazon Simple Storage Service (S3) Documentation,'' 2024. [Online]. Available: https://docs.aws.amazon.com/s3/
+
+\bibitem{awssns} Amazon Web Services, ``Amazon Simple Notification Service Developer Guide,'' 2024. [Online]. Available: https://docs.aws.amazon.com/sns/
+
+\bibitem{awsiam} Amazon Web Services, ``AWS Identity and Access Management User Guide,'' 2024. [Online]. Available: https://docs.aws.amazon.com/iam/
+
+\bibitem{react} Meta Platforms, ``React Documentation,'' 2024. [Online]. Available: https://react.dev/
+
+\bibitem{vite} E. You, ``Vite: Next Generation Frontend Tooling,'' 2024. [Online]. Available: https://vitejs.dev/
+
+\end{thebibliography}
+
+\end{document}
