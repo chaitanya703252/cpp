@@ -48,3 +48,4 @@ htmlcov/
 *.synctex.gz
 *.fls
 *.fdb_latexmk
+frontend/package-lock.json
