@@ -14,9 +14,11 @@ import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+import hmac
+import base64
+
 import boto3
-from boto3.dynamodb.conditions import Attr, Key
-import jwt
+from boto3.dynamodb.conditions import Attr
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -100,7 +102,15 @@ def verify_password(password, stored_hash):
     return hash_password(password, salt) == stored_hash
 
 
+def _b64_encode(data):
+    return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+
+def _b64_decode(s):
+    s += "=" * (4 - len(s) % 4)
+    return json.loads(base64.urlsafe_b64decode(s))
+
 def generate_token(user_id, email, role):
+    header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "userId": user_id,
         "email": email,
@@ -108,15 +118,27 @@ def generate_token(user_id, email, role):
         "exp": int(time.time()) + 86400,
         "iat": int(time.time()),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    segments = _b64_encode(header) + "." + _b64_encode(payload)
+    signature = hmac.new(JWT_SECRET.encode(), segments.encode(), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return segments + "." + sig_b64
 
 
 def decode_token(token):
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        segments = parts[0] + "." + parts[1]
+        expected_sig = hmac.new(JWT_SECRET.encode(), segments.encode(), hashlib.sha256).digest()
+        expected_b64 = base64.urlsafe_b64encode(expected_sig).decode().rstrip("=")
+        if not hmac.compare_digest(expected_b64, parts[2]):
+            return None
+        payload = _b64_decode(parts[1])
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except Exception:
         return None
 
 
