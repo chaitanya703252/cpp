@@ -1,6 +1,6 @@
-# leave-manager-nci
+# studygroup-scheduler-nci
 
-Employee Leave Management Library for the LeaveFlow system.
+Study Group Scheduling Library for StudySync - a student study group finder and scheduler.
 
 ## Author
 
@@ -9,58 +9,54 @@ Lakshmi Chaitanya (X25171216) - National College of Ireland
 ## Installation
 
 ```bash
-pip install leave-manager-nci
+pip install studygroup-scheduler-nci
 ```
 
 ## Modules
 
-### LeaveBalanceManager
-Manages employee leave balances including deductions, restorations, and business day calculations.
+### SessionScheduler
+Handles study session scheduling, time conflict detection, and weekly planning.
 
 ```python
-from leave_manager import LeaveBalanceManager
+from leave_manager import SessionScheduler
 
-balances = LeaveBalanceManager.get_default_balances()
-# {'annual': 20, 'sick': 10, 'unpaid': 30}
-
-days = LeaveBalanceManager.calculate_days("2026-04-01", "2026-04-05")
-LeaveBalanceManager.deduct_leave(balances, "annual", days)
+conflict = SessionScheduler.check_time_conflict(new_session, existing_sessions)
+schedule = SessionScheduler.get_weekly_schedule(sessions, "2026-04-06")
+slots = SessionScheduler.suggest_time_slots(existing, "2026-04-10")
+hours = SessionScheduler.get_total_study_hours(sessions)
 ```
 
-### OverlapDetector
-Detects overlapping leave requests and manages date conflicts.
+### GroupMatcher
+Matches students to relevant study groups based on subject overlap and preferences.
 
 ```python
-from leave_manager import OverlapDetector
+from leave_manager import GroupMatcher
 
-new_request = {"startDate": "2026-04-01", "endDate": "2026-04-05"}
-existing = [{"startDate": "2026-04-03", "endDate": "2026-04-07"}]
-has_overlap = OverlapDetector.check_overlap(new_request, existing)
+score = GroupMatcher.calculate_similarity(user_subjects, "mathematics")
+recs = GroupMatcher.recommend_groups(user_subjects, all_groups)
+popularity = GroupMatcher.get_subject_popularity(all_groups)
 ```
 
-### LeaveValidator
-Validates leave requests, employee data, and approval payloads.
+### InputValidator
+Validates study groups, sessions, and user registration data.
 
 ```python
-from leave_manager import LeaveValidator
+from leave_manager import InputValidator
 
-valid, errors = LeaveValidator.validate_leave_request({
-    "leaveType": "annual",
-    "startDate": "2026-04-01",
-    "endDate": "2026-04-05",
-    "reason": "Family vacation planned"
-})
+valid, errors = InputValidator.validate_group(group_data)
+valid, errors = InputValidator.validate_session(session_data)
+clean = InputValidator.sanitize_input(user_input)
 ```
 
-### LeaveFormatter
-Formats leave data for display, notifications, and CSV export.
+### ScheduleFormatter
+Formats schedules, session summaries, group reports, and CSV export.
 
 ```python
-from leave_manager import LeaveFormatter
+from leave_manager import ScheduleFormatter
 
-summary = LeaveFormatter.format_request_summary(request)
-csv_data = LeaveFormatter.to_csv(requests)
-calendar = LeaveFormatter.format_team_calendar(requests, "2026-04")
+summary = ScheduleFormatter.format_session_summary(session)
+report = ScheduleFormatter.format_weekly_schedule(sessions, "2026-04-06")
+csv_data = ScheduleFormatter.to_csv(sessions)
 ```
 
 ## Testing

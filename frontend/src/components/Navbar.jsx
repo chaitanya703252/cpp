@@ -1,5 +1,5 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { CalendarDays, LogOut, Menu, X } from 'lucide-react';
+import { BookOpen, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useState } from 'react';
 
@@ -16,15 +16,12 @@ export default function Navbar() {
 
   if (!user) return null;
 
-  const isManager = user.role === 'manager';
-
   const links = [
     { to: '/dashboard', label: 'Dashboard' },
-    { to: '/request-leave', label: 'Request Leave' },
-    { to: '/my-leaves', label: 'My Leaves' },
-    ...(isManager ? [{ to: '/approvals', label: 'Approvals' }] : []),
-    { to: '/team-calendar', label: 'Calendar' },
-    { to: '/balances', label: 'Balances' },
+    { to: '/browse', label: 'Browse Groups' },
+    { to: '/my-groups', label: 'My Groups' },
+    { to: '/create-group', label: 'Create Group' },
+    { to: '/schedule', label: 'Schedule' },
   ];
 
   const isActive = (path) => location.pathname === path;
@@ -34,9 +31,9 @@ export default function Navbar() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
           <div className="flex items-center">
-            <Link to="/dashboard" className="flex items-center gap-2 text-blue-600 font-bold text-xl no-underline">
-              <CalendarDays className="w-6 h-6" />
-              LeaveFlow
+            <Link to="/dashboard" className="flex items-center gap-2 text-emerald-600 font-bold text-xl no-underline">
+              <BookOpen className="w-6 h-6" />
+              StudySync
             </Link>
             <div className="hidden md:flex ml-10 gap-1">
               {links.map((link) => (
@@ -45,7 +42,7 @@ export default function Navbar() {
                   to={link.to}
                   className={`px-3 py-2 rounded-md text-sm font-medium no-underline transition-colors ${
                     isActive(link.to)
-                      ? 'bg-blue-50 text-blue-700'
+                      ? 'bg-emerald-50 text-emerald-700'
                       : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                   }`}
                 >
@@ -56,8 +53,7 @@ export default function Navbar() {
           </div>
           <div className="hidden md:flex items-center gap-4">
             <div className="text-sm text-gray-600">
-              <span className="font-medium text-gray-900">{user.name}</span>
-              <span className="ml-2 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-600 capitalize">{user.role}</span>
+              <span className="font-medium text-gray-900">{user.username}</span>
             </div>
             <button
               onClick={handleLogout}
@@ -87,7 +83,7 @@ export default function Navbar() {
                 onClick={() => setMobileOpen(false)}
                 className={`block px-3 py-2 rounded-md text-sm font-medium no-underline ${
                   isActive(link.to)
-                    ? 'bg-blue-50 text-blue-700'
+                    ? 'bg-emerald-50 text-emerald-700'
                     : 'text-gray-600 hover:bg-gray-50'
                 }`}
               >

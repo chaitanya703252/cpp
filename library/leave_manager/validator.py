@@ -1,30 +1,33 @@
 """
-Leave Validator - validates leave requests, employee data, and approvals.
+Input Validator - validates study groups, sessions, and user registration data.
 """
 
 import re
 from datetime import datetime
 
 
-class LeaveValidator:
-    """Validates all leave-related input data."""
+class InputValidator:
+    """Validates all study group related input data."""
 
-    VALID_LEAVE_TYPES = ["annual", "sick", "unpaid"]
-    VALID_APPROVAL_STATUSES = ["approved", "rejected"]
+    VALID_SUBJECTS = [
+        "mathematics", "physics", "chemistry", "biology", "computer_science",
+        "english", "history", "economics", "psychology", "engineering",
+        "business", "statistics", "data_science", "law", "medicine",
+    ]
 
     @staticmethod
-    def validate_leave_request(data):
+    def validate_group(data):
         """
-        Validate a leave request payload.
+        Validate study group creation data.
 
         Rules:
-            - leaveType must be one of annual, sick, unpaid
-            - startDate and endDate required in YYYY-MM-DD format
-            - startDate must be <= endDate
-            - reason is required with minimum 10 characters
+            - name required, 3-100 characters
+            - subject required
+            - description required, minimum 10 characters
+            - maxMembers between 2 and 20
 
         Args:
-            data: dict with leaveType, startDate, endDate, reason
+            data: dict with name, subject, description, maxMembers
 
         Returns:
             Tuple of (is_valid: bool, errors: list of str)
@@ -32,60 +35,45 @@ class LeaveValidator:
         errors = []
 
         if not data or not isinstance(data, dict):
-            return False, ["Request data is required"]
+            return False, ["Group data is required"]
 
-        # Validate leave type
-        leave_type = data.get("leaveType", "")
-        if not leave_type:
-            errors.append("Leave type is required")
-        elif leave_type not in LeaveValidator.VALID_LEAVE_TYPES:
-            errors.append(
-                f"Invalid leave type: {leave_type}. "
-                f"Must be one of: {', '.join(LeaveValidator.VALID_LEAVE_TYPES)}"
-            )
+        name = data.get("name", "")
+        if not name or len(name.strip()) < 3:
+            errors.append("Group name is required (minimum 3 characters)")
+        elif len(name.strip()) > 100:
+            errors.append("Group name must be 100 characters or less")
 
-        # Validate dates
-        start_date = data.get("startDate", "")
-        end_date = data.get("endDate", "")
+        subject = data.get("subject", "")
+        if not subject:
+            errors.append("Subject is required")
 
-        if not start_date:
-            errors.append("Start date is required")
-        else:
-            try:
-                start = datetime.strptime(start_date, "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                errors.append("Invalid start date format. Use YYYY-MM-DD")
-                start = None
+        description = data.get("description", "")
+        if not description or len(description.strip()) < 10:
+            errors.append("Description is required (minimum 10 characters)")
 
-        if not end_date:
-            errors.append("End date is required")
-        else:
-            try:
-                end = datetime.strptime(end_date, "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                errors.append("Invalid end date format. Use YYYY-MM-DD")
-                end = None
-
-        if start_date and end_date and "start" in dir() and "end" in dir():
-            if start is not None and end is not None and start > end:
-                errors.append("Start date must be before or equal to end date")
-
-        # Validate reason
-        reason = data.get("reason", "")
-        if not reason:
-            errors.append("Reason is required")
-        elif len(reason.strip()) < 10:
-            errors.append("Reason must be at least 10 characters")
+        max_members = data.get("maxMembers", 12)
+        try:
+            max_members = int(max_members)
+            if max_members < 2 or max_members > 20:
+                errors.append("Max members must be between 2 and 20")
+        except (ValueError, TypeError):
+            errors.append("Max members must be a valid number")
 
         return len(errors) == 0, errors
 
     @staticmethod
-    def validate_employee(data):
+    def validate_session(data):
         """
-        Validate employee registration data.
+        Validate study session data.
+
+        Rules:
+            - title required, minimum 3 characters
+            - date required, YYYY-MM-DD format
+            - startTime and endTime required, HH:MM format
+            - endTime must be after startTime
 
         Args:
-            data: dict with name, email, role, department
+            data: dict with title, date, startTime, endTime
 
         Returns:
             Tuple of (is_valid: bool, errors: list of str)
@@ -93,68 +81,84 @@ class LeaveValidator:
         errors = []
 
         if not data or not isinstance(data, dict):
-            return False, ["Employee data is required"]
+            return False, ["Session data is required"]
 
-        # Validate name
-        name = data.get("name", "")
-        if not name or len(name.strip()) < 2:
-            errors.append("Name is required (minimum 2 characters)")
+        title = data.get("title", "")
+        if not title or len(title.strip()) < 3:
+            errors.append("Session title is required (minimum 3 characters)")
 
-        # Validate email
+        date_str = data.get("date", "")
+        if not date_str:
+            errors.append("Date is required")
+        else:
+            try:
+                datetime.strptime(date_str, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                errors.append("Invalid date format. Use YYYY-MM-DD")
+
+        start_time = data.get("startTime", "")
+        end_time = data.get("endTime", "")
+
+        if not start_time:
+            errors.append("Start time is required")
+        else:
+            try:
+                st = datetime.strptime(start_time, "%H:%M")
+            except (ValueError, TypeError):
+                errors.append("Invalid start time format. Use HH:MM")
+                st = None
+
+        if not end_time:
+            errors.append("End time is required")
+        else:
+            try:
+                et = datetime.strptime(end_time, "%H:%M")
+            except (ValueError, TypeError):
+                errors.append("Invalid end time format. Use HH:MM")
+                et = None
+
+        if start_time and end_time:
+            try:
+                st_check = datetime.strptime(start_time, "%H:%M")
+                et_check = datetime.strptime(end_time, "%H:%M")
+                if et_check <= st_check:
+                    errors.append("End time must be after start time")
+            except (ValueError, TypeError):
+                pass
+
+        return len(errors) == 0, errors
+
+    @staticmethod
+    def validate_user(data):
+        """
+        Validate user registration data.
+
+        Args:
+            data: dict with username, email, password
+
+        Returns:
+            Tuple of (is_valid: bool, errors: list of str)
+        """
+        errors = []
+
+        if not data or not isinstance(data, dict):
+            return False, ["User data is required"]
+
+        username = data.get("username", "")
+        if not username or len(username.strip()) < 2:
+            errors.append("Username is required (minimum 2 characters)")
+
         email = data.get("email", "")
         if not email:
             errors.append("Email is required")
         elif not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
             errors.append("Invalid email format")
 
-        # Validate role
-        role = data.get("role", "")
-        if role and role not in ["employee", "manager"]:
-            errors.append("Role must be 'employee' or 'manager'")
-
-        # Validate password
         password = data.get("password", "")
         if not password:
             errors.append("Password is required")
         elif len(password) < 8:
             errors.append("Password must be at least 8 characters")
-
-        return len(errors) == 0, errors
-
-    @staticmethod
-    def validate_approval(data):
-        """
-        Validate approval/rejection payload.
-
-        Rules:
-            - status must be 'approved' or 'rejected'
-            - comments required for rejection
-
-        Args:
-            data: dict with status and optional comments
-
-        Returns:
-            Tuple of (is_valid: bool, errors: list of str)
-        """
-        errors = []
-
-        if not data or not isinstance(data, dict):
-            return False, ["Approval data is required"]
-
-        status = data.get("status", "")
-        if not status:
-            errors.append("Status is required")
-        elif status not in LeaveValidator.VALID_APPROVAL_STATUSES:
-            errors.append(
-                f"Invalid status: {status}. "
-                f"Must be one of: {', '.join(LeaveValidator.VALID_APPROVAL_STATUSES)}"
-            )
-
-        # Comments required for rejection
-        if status == "rejected":
-            comments = data.get("comments", "")
-            if not comments or len(comments.strip()) < 1:
-                errors.append("Comments are required when rejecting a request")
 
         return len(errors) == 0, errors
 
@@ -172,11 +176,8 @@ class LeaveValidator:
         if not isinstance(text, str):
             return str(text) if text is not None else ""
 
-        # Remove HTML tags
         text = re.sub(r"<[^>]*>", "", text)
-        # Remove script injections
         text = re.sub(r"(javascript|script|onclick|onerror):", "", text, flags=re.IGNORECASE)
-        # Strip leading/trailing whitespace
         text = text.strip()
 
         return text

@@ -8,7 +8,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('leaveflow_token');
+  const token = localStorage.getItem('studysync_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -19,8 +19,8 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('leaveflow_token');
-      localStorage.removeItem('leaveflow_user');
+      localStorage.removeItem('studysync_token');
+      localStorage.removeItem('studysync_user');
       window.location.href = '/login';
     }
     return Promise.reject(err);

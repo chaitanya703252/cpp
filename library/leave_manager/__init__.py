@@ -1,5 +1,5 @@
 """
-leave-manager-nci - Employee Leave Management Library
+studygroup-scheduler-nci - Study Group Scheduling Library
 Author: Lakshmi Chaitanya
 Version: 1.0.0
 """
@@ -7,14 +7,14 @@ Version: 1.0.0
 __version__ = "1.0.0"
 __author__ = "Lakshmi Chaitanya"
 
-from .balance import LeaveBalanceManager
-from .overlap import OverlapDetector
-from .validator import LeaveValidator
-from .formatter import LeaveFormatter
+from .scheduler import SessionScheduler
+from .matcher import GroupMatcher
+from .validator import InputValidator
+from .formatter import ScheduleFormatter
 
 __all__ = [
-    "LeaveBalanceManager",
-    "OverlapDetector",
-    "LeaveValidator",
-    "LeaveFormatter",
+    "SessionScheduler",
+    "GroupMatcher",
+    "InputValidator",
+    "ScheduleFormatter",
 ]

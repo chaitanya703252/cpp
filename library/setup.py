@@ -1,11 +1,11 @@
-"""Setup configuration for leave-manager-nci package."""
+"""Setup configuration for studygroup-scheduler-nci package."""
 
 from setuptools import setup, find_packages
 
 setup(
-    name="leave-manager-nci",
+    name="studygroup-scheduler-nci",
     version="1.0.0",
-    description="Employee Leave Management Library for LeaveFlow",
+    description="Study Group Scheduling Library for StudySync",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Lakshmi Chaitanya",

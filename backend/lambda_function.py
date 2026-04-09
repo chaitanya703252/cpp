@@ -1,5 +1,5 @@
 """
-LeaveFlow - Employee Leave Request System
+StudySync - Student Study Group Finder & Scheduler
 AWS Lambda Function Handler
 
 Student: Kondragunta Lakshmi Chaitanya (X25171216)
@@ -23,11 +23,11 @@ from boto3.dynamodb.conditions import Attr
 # ---------------------------------------------------------------------------
 # Environment variables
 # ---------------------------------------------------------------------------
-DYNAMODB_TABLE = os.environ.get("DYNAMODB_TABLE", "leaveflow-prod")
-S3_BUCKET = os.environ.get("S3_BUCKET", "leaveflow-files-prod-chaitanya")
+DYNAMODB_TABLE = os.environ.get("DYNAMODB_TABLE", "studysync-prod")
+S3_BUCKET = os.environ.get("S3_BUCKET", "studysync-files-prod-chaitanya")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 REGION = os.environ.get("REGION", "eu-west-1")
-JWT_SECRET = os.environ.get("JWT_SECRET", "leaveflow-secret-2026")
+JWT_SECRET = os.environ.get("JWT_SECRET", "studysync-secret-2026")
 
 # ---------------------------------------------------------------------------
 # AWS clients
@@ -38,10 +38,14 @@ s3_client = boto3.client("s3", region_name=REGION)
 sns_client = boto3.client("sns", region_name=REGION)
 
 # ---------------------------------------------------------------------------
-# Defaults
+# Constants
 # ---------------------------------------------------------------------------
-DEFAULT_BALANCES = {"annual": 20, "sick": 10, "unpaid": 30}
-VALID_LEAVE_TYPES = ["annual", "sick", "unpaid"]
+VALID_SUBJECTS = [
+    "mathematics", "physics", "chemistry", "biology", "computer_science",
+    "english", "history", "economics", "psychology", "engineering",
+    "business", "statistics", "data_science", "law", "medicine",
+]
+MAX_GROUP_MEMBERS = 12
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -109,12 +113,11 @@ def _b64_decode(s):
     s += "=" * (4 - len(s) % 4)
     return json.loads(base64.urlsafe_b64decode(s))
 
-def generate_token(user_id, email, role):
+def generate_token(user_id, email):
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "userId": user_id,
         "email": email,
-        "role": role,
         "exp": int(time.time()) + 86400,
         "iat": int(time.time()),
     }
@@ -149,22 +152,6 @@ def get_current_user(event):
         token = auth[7:]
         return decode_token(token)
     return None
-
-
-def calculate_business_days(start_date_str, end_date_str):
-    start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-    end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-    days = 0
-    current = start
-    while current <= end:
-        if current.weekday() < 5:
-            days += 1
-        current += timedelta(days=1)
-    return days
-
-
-def dates_overlap(s1, e1, s2, e2):
-    return s1 <= e2 and e1 >= s2
 
 
 def publish_notification(subject, message):
@@ -214,7 +201,8 @@ def handle_register(event):
     username = body.get("username", "").strip()
     email = body.get("email", "").strip().lower()
     password = body.get("password", "")
-    role = body.get("role", "employee")
+    university = body.get("university", "").strip()
+    subjects = body.get("subjects", [])
 
     if not username or len(username) < 2:
         return json_response(400, {"error": "Username is required (minimum 2 characters)"})
@@ -222,10 +210,13 @@ def handle_register(event):
         return json_response(400, {"error": "Valid email is required"})
     if not password or len(password) < 8:
         return json_response(400, {"error": "Password must be at least 8 characters"})
-    if role not in ["employee", "manager"]:
-        return json_response(400, {"error": "Role must be 'employee' or 'manager'"})
 
-    # Check if email already exists (scan for users with this email)
+    # Validate subjects
+    if isinstance(subjects, list):
+        subjects = [s.lower().strip() for s in subjects if isinstance(s, str) and s.strip()]
+    else:
+        subjects = []
+
     existing = scan_by_entity("user", Attr("email").eq(email))
     if existing:
         return json_response(409, {"error": "Email already registered"})
@@ -233,32 +224,19 @@ def handle_register(event):
     user_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
 
-    # Create user item
     user_item = to_decimal({
         "id": user_id,
         "entityType": "user",
         "username": username,
         "email": email,
         "passwordHash": hash_password(password),
-        "role": role,
+        "university": university,
+        "subjects": subjects,
         "createdAt": now,
     })
     table.put_item(Item=user_item)
 
-    # Create leave_balance item
-    balance_id = str(uuid.uuid4())
-    balance_item = to_decimal({
-        "id": balance_id,
-        "entityType": "leave_balance",
-        "userId": user_id,
-        "annual": 20,
-        "sick": 10,
-        "unpaid": 30,
-        "createdAt": now,
-    })
-    table.put_item(Item=balance_item)
-
-    token = generate_token(user_id, email, role)
+    token = generate_token(user_id, email)
 
     return json_response(201, {
         "message": "Registration successful",
@@ -267,7 +245,8 @@ def handle_register(event):
             "userId": user_id,
             "username": username,
             "email": email,
-            "role": role,
+            "university": university,
+            "subjects": subjects,
         },
     })
 
@@ -288,7 +267,7 @@ def handle_login(event):
     if not verify_password(password, user["passwordHash"]):
         return json_response(401, {"error": "Invalid email or password"})
 
-    token = generate_token(user["id"], email, user["role"])
+    token = generate_token(user["id"], email)
 
     return json_response(200, {
         "message": "Login successful",
@@ -297,351 +276,624 @@ def handle_login(event):
             "userId": user["id"],
             "username": user.get("username", ""),
             "email": user["email"],
-            "role": user["role"],
+            "university": user.get("university", ""),
+            "subjects": user.get("subjects", []),
         },
     })
 
 
 # ---------------------------------------------------------------------------
-# Leave Request handlers
+# Study Group handlers
 # ---------------------------------------------------------------------------
 
-def _get_balance_for_user(user_id):
-    """Return the leave_balance item for a user."""
-    items = scan_by_entity("leave_balance", Attr("userId").eq(user_id))
-    return items[0] if items else None
-
-
-def _get_user_item(user_id):
-    """Return the user item by id."""
-    item = get_item_by_id(user_id)
-    if item and item.get("entityType") == "user":
-        return item
-    return None
-
-
-def handle_get_leaves(event):
+def handle_get_groups(event):
+    """Get all study groups, optionally filtered by subject."""
     user = get_current_user(event)
     if not user:
         return json_response(401, {"error": "Authentication required"})
 
-    if user["role"] == "manager":
-        items = scan_by_entity("leave_request")
-    else:
-        items = scan_by_entity("leave_request", Attr("userId").eq(user["userId"]))
+    query_params = event.get("queryStringParameters") or {}
+    subject_filter = query_params.get("subject", "").lower().strip()
+    search_query = query_params.get("search", "").lower().strip()
 
-    leaves = []
-    for item in items:
-        leaves.append({
-            "id": item.get("id"),
-            "userId": item.get("userId"),
-            "employeeName": item.get("employeeName", ""),
-            "leaveType": item.get("leaveType"),
-            "startDate": item.get("startDate"),
-            "endDate": item.get("endDate"),
-            "reason": item.get("reason"),
-            "status": item.get("status"),
-            "days": item.get("days"),
-            "comments": item.get("comments", ""),
-            "createdAt": item.get("createdAt"),
+    groups = scan_by_entity("study_group")
+
+    if subject_filter:
+        groups = [g for g in groups if g.get("subject", "").lower() == subject_filter]
+
+    if search_query:
+        groups = [
+            g for g in groups
+            if search_query in g.get("name", "").lower()
+            or search_query in g.get("description", "").lower()
+            or search_query in g.get("subject", "").lower()
+        ]
+
+    # Enrich with member count
+    memberships = scan_by_entity("membership")
+    group_member_counts = {}
+    for m in memberships:
+        gid = m.get("groupId")
+        group_member_counts[gid] = group_member_counts.get(gid, 0) + 1
+
+    result = []
+    for g in groups:
+        result.append({
+            "id": g["id"],
+            "name": g.get("name"),
+            "subject": g.get("subject"),
+            "description": g.get("description", ""),
+            "maxMembers": g.get("maxMembers", MAX_GROUP_MEMBERS),
+            "memberCount": group_member_counts.get(g["id"], 0),
+            "createdBy": g.get("createdBy"),
+            "creatorName": g.get("creatorName", ""),
+            "createdAt": g.get("createdAt"),
         })
 
-    leaves.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
-    return json_response(200, {"leaves": leaves})
+    result.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
+    return json_response(200, {"groups": result})
 
 
-def handle_create_leave(event):
+def handle_create_group(event):
     user = get_current_user(event)
     if not user:
         return json_response(401, {"error": "Authentication required"})
 
     body = parse_body(event)
-    leave_type = body.get("leaveType", "")
-    start_date = body.get("startDate", "")
-    end_date = body.get("endDate", "")
-    reason = body.get("reason", "")
+    name = body.get("name", "").strip()
+    subject = body.get("subject", "").lower().strip()
+    description = body.get("description", "").strip()
+    max_members = body.get("maxMembers", MAX_GROUP_MEMBERS)
 
-    if leave_type not in VALID_LEAVE_TYPES:
-        return json_response(400, {"error": f"Invalid leave type. Must be one of: {', '.join(VALID_LEAVE_TYPES)}"})
-    if not start_date or not end_date:
-        return json_response(400, {"error": "Start date and end date are required"})
-    if not reason or len(reason.strip()) < 10:
-        return json_response(400, {"error": "Reason is required (minimum 10 characters)"})
+    if not name or len(name) < 3:
+        return json_response(400, {"error": "Group name is required (minimum 3 characters)"})
+    if not subject:
+        return json_response(400, {"error": "Subject is required"})
+    if not description or len(description) < 10:
+        return json_response(400, {"error": "Description is required (minimum 10 characters)"})
 
     try:
-        start = datetime.strptime(start_date, "%Y-%m-%d").date()
-        end = datetime.strptime(end_date, "%Y-%m-%d").date()
-    except ValueError:
-        return json_response(400, {"error": "Invalid date format. Use YYYY-MM-DD"})
+        max_members = int(max_members)
+        if max_members < 2 or max_members > 20:
+            return json_response(400, {"error": "Max members must be between 2 and 20"})
+    except (ValueError, TypeError):
+        max_members = MAX_GROUP_MEMBERS
 
-    if start > end:
-        return json_response(400, {"error": "Start date must be before or equal to end date"})
+    # Get creator name
+    user_item = get_item_by_id(user["userId"])
+    creator_name = user_item.get("username", "Unknown") if user_item else "Unknown"
 
-    days = calculate_business_days(start_date, end_date)
-    if days == 0:
-        return json_response(400, {"error": "Leave request must include at least one business day"})
-
-    # Get user profile for name
-    user_item = _get_user_item(user["userId"])
-    if not user_item:
-        return json_response(404, {"error": "User profile not found"})
-
-    # Get balance
-    balance = _get_balance_for_user(user["userId"])
-    if not balance:
-        return json_response(404, {"error": "Leave balance not found"})
-
-    current_balance = int(balance.get(leave_type, 0))
-    if current_balance < days:
-        return json_response(400, {
-            "error": f"Insufficient {leave_type} leave balance. Available: {current_balance}, Requested: {days}"
-        })
-
-    # Overlap detection
-    existing = scan_by_entity(
-        "leave_request",
-        Attr("userId").eq(user["userId"]) & Attr("status").is_in(["pending", "approved"])
-    )
-    for ex in existing:
-        ex_start = datetime.strptime(ex["startDate"], "%Y-%m-%d").date()
-        ex_end = datetime.strptime(ex["endDate"], "%Y-%m-%d").date()
-        if dates_overlap(start, end, ex_start, ex_end):
-            return json_response(409, {"error": "Leave request overlaps with an existing pending/approved request"})
-
-    # Deduct balance
-    new_balance = current_balance - days
-    table.update_item(
-        Key={"id": balance["id"]},
-        UpdateExpression="SET #lt = :val",
-        ExpressionAttributeNames={"#lt": leave_type},
-        ExpressionAttributeValues={":val": Decimal(str(new_balance))},
-    )
-
-    # Create leave request
-    request_id = str(uuid.uuid4())
+    group_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
 
-    leave_item = to_decimal({
-        "id": request_id,
-        "entityType": "leave_request",
-        "userId": user["userId"],
-        "employeeName": user_item.get("username", "Unknown"),
-        "leaveType": leave_type,
-        "startDate": start_date,
-        "endDate": end_date,
-        "reason": reason,
-        "status": "pending",
-        "days": days,
-        "comments": "",
+    group_item = to_decimal({
+        "id": group_id,
+        "entityType": "study_group",
+        "name": name,
+        "subject": subject,
+        "description": description,
+        "maxMembers": max_members,
+        "createdBy": user["userId"],
+        "creatorName": creator_name,
         "createdAt": now,
     })
-    table.put_item(Item=leave_item)
+    table.put_item(Item=group_item)
 
-    # SNS notification
+    # Auto-add creator as organizer
+    membership_id = str(uuid.uuid4())
+    membership_item = to_decimal({
+        "id": membership_id,
+        "entityType": "membership",
+        "groupId": group_id,
+        "userId": user["userId"],
+        "username": creator_name,
+        "role": "organizer",
+        "joinedAt": now,
+    })
+    table.put_item(Item=membership_item)
+
     publish_notification(
-        f"New Leave Request - {user_item.get('username', 'Employee')}",
-        f"{user_item.get('username', 'Employee')} submitted a {leave_type} leave request "
-        f"from {start_date} to {end_date} ({days} days).\nReason: {reason}",
+        f"New Study Group: {name}",
+        f"{creator_name} created a new study group '{name}' for {subject}.\n"
+        f"Description: {description}\nMax members: {max_members}",
     )
 
     return json_response(201, {
-        "message": "Leave request submitted successfully",
-        "request": {
-            "id": request_id,
-            "leaveType": leave_type,
-            "startDate": start_date,
-            "endDate": end_date,
-            "reason": reason,
-            "status": "pending",
-            "days": days,
+        "message": "Study group created successfully",
+        "group": {
+            "id": group_id,
+            "name": name,
+            "subject": subject,
+            "description": description,
+            "maxMembers": max_members,
+            "memberCount": 1,
             "createdAt": now,
         },
     })
 
 
-def handle_get_leave(event, request_id):
+def handle_get_group(event, group_id):
     user = get_current_user(event)
     if not user:
         return json_response(401, {"error": "Authentication required"})
 
-    item = get_item_by_id(request_id)
-    if not item or item.get("entityType") != "leave_request":
-        return json_response(404, {"error": "Leave request not found"})
+    group = get_item_by_id(group_id)
+    if not group or group.get("entityType") != "study_group":
+        return json_response(404, {"error": "Study group not found"})
 
-    # Employees can only see their own
-    if user["role"] != "manager" and item.get("userId") != user["userId"]:
-        return json_response(403, {"error": "Access denied"})
+    # Get members
+    memberships = scan_by_entity("membership", Attr("groupId").eq(group_id))
+    members = [
+        {
+            "userId": m.get("userId"),
+            "username": m.get("username"),
+            "role": m.get("role"),
+            "joinedAt": m.get("joinedAt"),
+        }
+        for m in memberships
+    ]
+
+    # Get upcoming sessions
+    sessions = scan_by_entity("session", Attr("groupId").eq(group_id))
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    upcoming = [s for s in sessions if s.get("date", "") >= today]
+    upcoming.sort(key=lambda x: (x.get("date", ""), x.get("startTime", "")))
+
+    # Check if current user is a member
+    is_member = any(m.get("userId") == user["userId"] for m in memberships)
+    user_role = None
+    for m in memberships:
+        if m.get("userId") == user["userId"]:
+            user_role = m.get("role")
+            break
 
     return json_response(200, {
-        "request": {
-            "id": item.get("id"),
-            "userId": item.get("userId"),
-            "employeeName": item.get("employeeName", ""),
-            "leaveType": item.get("leaveType"),
-            "startDate": item.get("startDate"),
-            "endDate": item.get("endDate"),
-            "reason": item.get("reason"),
-            "status": item.get("status"),
-            "days": item.get("days"),
-            "comments": item.get("comments", ""),
-            "createdAt": item.get("createdAt"),
+        "group": {
+            "id": group["id"],
+            "name": group.get("name"),
+            "subject": group.get("subject"),
+            "description": group.get("description", ""),
+            "maxMembers": group.get("maxMembers", MAX_GROUP_MEMBERS),
+            "createdBy": group.get("createdBy"),
+            "creatorName": group.get("creatorName", ""),
+            "createdAt": group.get("createdAt"),
         },
+        "members": members,
+        "sessions": [
+            {
+                "id": s["id"],
+                "title": s.get("title"),
+                "date": s.get("date"),
+                "startTime": s.get("startTime"),
+                "endTime": s.get("endTime"),
+                "location": s.get("location", ""),
+                "isOnline": s.get("isOnline", False),
+                "notes": s.get("notes", ""),
+                "createdBy": s.get("createdBy"),
+            }
+            for s in upcoming
+        ],
+        "isMember": is_member,
+        "userRole": user_role,
     })
 
 
-def handle_delete_leave(event, request_id):
+def handle_update_group(event, group_id):
     user = get_current_user(event)
     if not user:
         return json_response(401, {"error": "Authentication required"})
 
-    item = get_item_by_id(request_id)
-    if not item or item.get("entityType") != "leave_request":
-        return json_response(404, {"error": "Leave request not found"})
+    group = get_item_by_id(group_id)
+    if not group or group.get("entityType") != "study_group":
+        return json_response(404, {"error": "Study group not found"})
 
-    if item.get("userId") != user["userId"]:
-        return json_response(403, {"error": "Access denied"})
-
-    if item.get("status") != "pending":
-        return json_response(400, {"error": "Only pending requests can be cancelled"})
-
-    # Restore balance
-    leave_type = item["leaveType"]
-    days = int(item.get("days", 0))
-
-    balance = _get_balance_for_user(user["userId"])
-    if balance:
-        current = int(balance.get(leave_type, 0))
-        restored = min(current + days, DEFAULT_BALANCES.get(leave_type, 0))
-        table.update_item(
-            Key={"id": balance["id"]},
-            UpdateExpression="SET #lt = :val",
-            ExpressionAttributeNames={"#lt": leave_type},
-            ExpressionAttributeValues={":val": Decimal(str(restored))},
-        )
-
-    # Delete the leave request
-    table.delete_item(Key={"id": request_id})
-
-    return json_response(200, {"message": "Leave request cancelled successfully"})
-
-
-# ---------------------------------------------------------------------------
-# Approval handlers
-# ---------------------------------------------------------------------------
-
-def handle_approve_leave(event, request_id):
-    user = get_current_user(event)
-    if not user:
-        return json_response(401, {"error": "Authentication required"})
-    if user["role"] != "manager":
-        return json_response(403, {"error": "Only managers can approve/reject leave requests"})
+    # Only organizer can update
+    memberships = scan_by_entity(
+        "membership",
+        Attr("groupId").eq(group_id) & Attr("userId").eq(user["userId"]) & Attr("role").eq("organizer")
+    )
+    if not memberships:
+        return json_response(403, {"error": "Only the group organizer can update this group"})
 
     body = parse_body(event)
-    status = body.get("status", "")
-    comments = body.get("comments", "")
+    name = body.get("name", "").strip()
+    description = body.get("description", "").strip()
 
-    if status not in ["approved", "rejected"]:
-        return json_response(400, {"error": "Status must be 'approved' or 'rejected'"})
+    update_parts = []
+    attr_values = {}
+    attr_names = {}
 
-    item = get_item_by_id(request_id)
-    if not item or item.get("entityType") != "leave_request":
-        return json_response(404, {"error": "Leave request not found"})
+    if name and len(name) >= 3:
+        update_parts.append("#n = :n")
+        attr_names["#n"] = "name"
+        attr_values[":n"] = name
+    if description:
+        update_parts.append("description = :d")
+        attr_values[":d"] = description
 
-    if item.get("status") != "pending":
-        return json_response(400, {"error": "Only pending requests can be approved/rejected"})
+    if not update_parts:
+        return json_response(400, {"error": "No valid fields to update"})
 
-    # Update status
     table.update_item(
-        Key={"id": request_id},
-        UpdateExpression="SET #s = :s, comments = :c",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":s": status, ":c": comments},
+        Key={"id": group_id},
+        UpdateExpression="SET " + ", ".join(update_parts),
+        ExpressionAttributeValues=attr_values,
+        ExpressionAttributeNames=attr_names if attr_names else None,
+    ) if attr_names else table.update_item(
+        Key={"id": group_id},
+        UpdateExpression="SET " + ", ".join(update_parts),
+        ExpressionAttributeValues=attr_values,
     )
 
-    # If rejected, restore balance
-    if status == "rejected":
-        leave_type = item["leaveType"]
-        days = int(item.get("days", 0))
-        employee_id = item["userId"]
+    return json_response(200, {"message": "Group updated successfully"})
 
-        balance = _get_balance_for_user(employee_id)
-        if balance:
-            current = int(balance.get(leave_type, 0))
-            restored = min(current + days, DEFAULT_BALANCES.get(leave_type, 0))
-            table.update_item(
-                Key={"id": balance["id"]},
-                UpdateExpression="SET #lt = :val",
-                ExpressionAttributeNames={"#lt": leave_type},
-                ExpressionAttributeValues={":val": Decimal(str(restored))},
-            )
 
-    # SNS notification
-    employee_name = item.get("employeeName", "Employee")
-    publish_notification(
-        f"Leave Request {status.capitalize()} - {employee_name}",
-        f"Leave request for {employee_name} ({item.get('leaveType')}) "
-        f"from {item.get('startDate')} to {item.get('endDate')} "
-        f"has been {status}.\nComments: {comments or 'None'}",
+def handle_delete_group(event, group_id):
+    user = get_current_user(event)
+    if not user:
+        return json_response(401, {"error": "Authentication required"})
+
+    group = get_item_by_id(group_id)
+    if not group or group.get("entityType") != "study_group":
+        return json_response(404, {"error": "Study group not found"})
+
+    if group.get("createdBy") != user["userId"]:
+        return json_response(403, {"error": "Only the creator can delete this group"})
+
+    # Delete all memberships
+    memberships = scan_by_entity("membership", Attr("groupId").eq(group_id))
+    for m in memberships:
+        table.delete_item(Key={"id": m["id"]})
+
+    # Delete all sessions
+    sessions = scan_by_entity("session", Attr("groupId").eq(group_id))
+    for s in sessions:
+        table.delete_item(Key={"id": s["id"]})
+
+    # Delete the group
+    table.delete_item(Key={"id": group_id})
+
+    return json_response(200, {"message": "Study group deleted successfully"})
+
+
+# ---------------------------------------------------------------------------
+# Membership handlers
+# ---------------------------------------------------------------------------
+
+def handle_join_group(event, group_id):
+    user = get_current_user(event)
+    if not user:
+        return json_response(401, {"error": "Authentication required"})
+
+    group = get_item_by_id(group_id)
+    if not group or group.get("entityType") != "study_group":
+        return json_response(404, {"error": "Study group not found"})
+
+    # Check if already a member
+    existing = scan_by_entity(
+        "membership",
+        Attr("groupId").eq(group_id) & Attr("userId").eq(user["userId"])
     )
+    if existing:
+        return json_response(409, {"error": "You are already a member of this group"})
 
-    return json_response(200, {
-        "message": f"Leave request {status} successfully",
-        "requestId": request_id,
-        "status": status,
-        "comments": comments,
+    # Check member limit
+    all_members = scan_by_entity("membership", Attr("groupId").eq(group_id))
+    max_members = int(group.get("maxMembers", MAX_GROUP_MEMBERS))
+    if len(all_members) >= max_members:
+        return json_response(400, {"error": "This group has reached its maximum member limit"})
+
+    # Get username
+    user_item = get_item_by_id(user["userId"])
+    username = user_item.get("username", "Unknown") if user_item else "Unknown"
+
+    membership_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+
+    membership_item = to_decimal({
+        "id": membership_id,
+        "entityType": "membership",
+        "groupId": group_id,
+        "userId": user["userId"],
+        "username": username,
+        "role": "member",
+        "joinedAt": now,
     })
+    table.put_item(Item=membership_item)
+
+    publish_notification(
+        f"New Member: {group.get('name', 'Study Group')}",
+        f"{username} joined the study group '{group.get('name', '')}'.",
+    )
+
+    return json_response(200, {"message": "Successfully joined the study group"})
 
 
-# ---------------------------------------------------------------------------
-# Employee handlers
-# ---------------------------------------------------------------------------
-
-def handle_get_employees(event):
-    user = get_current_user(event)
-    if not user:
-        return json_response(401, {"error": "Authentication required"})
-    if user["role"] != "manager":
-        return json_response(403, {"error": "Only managers can view employee list"})
-
-    items = scan_by_entity("user")
-    employees = []
-    for item in items:
-        employees.append({
-            "userId": item.get("id"),
-            "username": item.get("username"),
-            "email": item.get("email"),
-            "role": item.get("role"),
-        })
-
-    return json_response(200, {"employees": employees})
-
-
-def handle_get_employee_balance(event, employee_id):
+def handle_leave_group(event, group_id):
     user = get_current_user(event)
     if not user:
         return json_response(401, {"error": "Authentication required"})
 
-    # Employees can only view their own, managers can view anyone
-    if user["role"] != "manager" and user["userId"] != employee_id:
-        return json_response(403, {"error": "Access denied"})
+    memberships = scan_by_entity(
+        "membership",
+        Attr("groupId").eq(group_id) & Attr("userId").eq(user["userId"])
+    )
+    if not memberships:
+        return json_response(404, {"error": "You are not a member of this group"})
 
-    user_item = _get_user_item(employee_id)
-    if not user_item:
-        return json_response(404, {"error": "Employee not found"})
+    membership = memberships[0]
+    if membership.get("role") == "organizer":
+        return json_response(400, {"error": "Organizers cannot leave their own group. Delete the group instead."})
 
-    balance = _get_balance_for_user(employee_id)
-    if not balance:
-        return json_response(404, {"error": "Leave balance not found"})
+    table.delete_item(Key={"id": membership["id"]})
 
-    return json_response(200, {
-        "employeeId": employee_id,
-        "username": user_item.get("username", ""),
-        "balances": {
-            "annual": balance.get("annual", 20),
-            "sick": balance.get("sick", 10),
-            "unpaid": balance.get("unpaid", 30),
+    return json_response(200, {"message": "Successfully left the study group"})
+
+
+# ---------------------------------------------------------------------------
+# Session handlers
+# ---------------------------------------------------------------------------
+
+def handle_get_sessions(event, group_id):
+    user = get_current_user(event)
+    if not user:
+        return json_response(401, {"error": "Authentication required"})
+
+    sessions = scan_by_entity("session", Attr("groupId").eq(group_id))
+    sessions.sort(key=lambda x: (x.get("date", ""), x.get("startTime", "")))
+
+    result = [
+        {
+            "id": s["id"],
+            "groupId": s.get("groupId"),
+            "title": s.get("title"),
+            "date": s.get("date"),
+            "startTime": s.get("startTime"),
+            "endTime": s.get("endTime"),
+            "location": s.get("location", ""),
+            "isOnline": s.get("isOnline", False),
+            "notes": s.get("notes", ""),
+            "createdBy": s.get("createdBy"),
+            "creatorName": s.get("creatorName", ""),
+            "createdAt": s.get("createdAt"),
+        }
+        for s in sessions
+    ]
+
+    return json_response(200, {"sessions": result})
+
+
+def handle_create_session(event, group_id):
+    user = get_current_user(event)
+    if not user:
+        return json_response(401, {"error": "Authentication required"})
+
+    # Verify membership
+    memberships = scan_by_entity(
+        "membership",
+        Attr("groupId").eq(group_id) & Attr("userId").eq(user["userId"])
+    )
+    if not memberships:
+        return json_response(403, {"error": "You must be a member of this group to schedule sessions"})
+
+    body = parse_body(event)
+    title = body.get("title", "").strip()
+    date = body.get("date", "").strip()
+    start_time = body.get("startTime", "").strip()
+    end_time = body.get("endTime", "").strip()
+    location = body.get("location", "").strip()
+    is_online = body.get("isOnline", False)
+    notes = body.get("notes", "").strip()
+
+    if not title or len(title) < 3:
+        return json_response(400, {"error": "Session title is required (minimum 3 characters)"})
+    if not date:
+        return json_response(400, {"error": "Date is required"})
+    if not start_time or not end_time:
+        return json_response(400, {"error": "Start time and end time are required"})
+
+    # Validate date format
+    try:
+        session_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        return json_response(400, {"error": "Invalid date format. Use YYYY-MM-DD"})
+
+    # Validate time format
+    try:
+        st = datetime.strptime(start_time, "%H:%M")
+        et = datetime.strptime(end_time, "%H:%M")
+    except ValueError:
+        return json_response(400, {"error": "Invalid time format. Use HH:MM"})
+
+    if st >= et:
+        return json_response(400, {"error": "End time must be after start time"})
+
+    # Check for time conflicts within the same group on the same date
+    existing_sessions = scan_by_entity(
+        "session",
+        Attr("groupId").eq(group_id) & Attr("date").eq(date)
+    )
+    for es in existing_sessions:
+        es_start = es.get("startTime", "")
+        es_end = es.get("endTime", "")
+        if start_time < es_end and end_time > es_start:
+            return json_response(409, {
+                "error": f"Time conflict with existing session '{es.get('title', '')}' ({es_start}-{es_end})"
+            })
+
+    user_item = get_item_by_id(user["userId"])
+    creator_name = user_item.get("username", "Unknown") if user_item else "Unknown"
+
+    session_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+
+    session_item = to_decimal({
+        "id": session_id,
+        "entityType": "session",
+        "groupId": group_id,
+        "title": title,
+        "date": date,
+        "startTime": start_time,
+        "endTime": end_time,
+        "location": location if not is_online else "Online",
+        "isOnline": is_online,
+        "notes": notes,
+        "createdBy": user["userId"],
+        "creatorName": creator_name,
+        "createdAt": now,
+    })
+    table.put_item(Item=session_item)
+
+    # Get group name for notification
+    group = get_item_by_id(group_id)
+    group_name = group.get("name", "Study Group") if group else "Study Group"
+
+    publish_notification(
+        f"New Session: {group_name}",
+        f"{creator_name} scheduled a new session '{title}' for {group_name}.\n"
+        f"Date: {date} | Time: {start_time} - {end_time}\n"
+        f"Location: {location if not is_online else 'Online'}",
+    )
+
+    return json_response(201, {
+        "message": "Study session scheduled successfully",
+        "session": {
+            "id": session_id,
+            "title": title,
+            "date": date,
+            "startTime": start_time,
+            "endTime": end_time,
+            "location": location if not is_online else "Online",
+            "isOnline": is_online,
+            "notes": notes,
+            "createdAt": now,
         },
     })
+
+
+def handle_update_session(event, group_id, session_id):
+    user = get_current_user(event)
+    if not user:
+        return json_response(401, {"error": "Authentication required"})
+
+    session = get_item_by_id(session_id)
+    if not session or session.get("entityType") != "session" or session.get("groupId") != group_id:
+        return json_response(404, {"error": "Session not found"})
+
+    # Only the session creator or group organizer can update
+    is_creator = session.get("createdBy") == user["userId"]
+    is_organizer = bool(scan_by_entity(
+        "membership",
+        Attr("groupId").eq(group_id) & Attr("userId").eq(user["userId"]) & Attr("role").eq("organizer")
+    ))
+
+    if not is_creator and not is_organizer:
+        return json_response(403, {"error": "Only the session creator or group organizer can update sessions"})
+
+    body = parse_body(event)
+    update_parts = []
+    attr_values = {}
+
+    if body.get("title", "").strip():
+        update_parts.append("title = :t")
+        attr_values[":t"] = body["title"].strip()
+    if body.get("date", "").strip():
+        update_parts.append("#d = :d")
+        attr_values[":d"] = body["date"].strip()
+    if body.get("startTime", "").strip():
+        update_parts.append("startTime = :st")
+        attr_values[":st"] = body["startTime"].strip()
+    if body.get("endTime", "").strip():
+        update_parts.append("endTime = :et")
+        attr_values[":et"] = body["endTime"].strip()
+    if "location" in body:
+        update_parts.append("#l = :l")
+        attr_values[":l"] = body["location"].strip()
+    if "notes" in body:
+        update_parts.append("notes = :n")
+        attr_values[":n"] = body["notes"].strip()
+    if "isOnline" in body:
+        update_parts.append("isOnline = :io")
+        attr_values[":io"] = bool(body["isOnline"])
+
+    if not update_parts:
+        return json_response(400, {"error": "No valid fields to update"})
+
+    attr_names = {}
+    if "#d" in str(update_parts):
+        attr_names["#d"] = "date"
+    if "#l" in str(update_parts):
+        attr_names["#l"] = "location"
+
+    update_kwargs = {
+        "Key": {"id": session_id},
+        "UpdateExpression": "SET " + ", ".join(update_parts),
+        "ExpressionAttributeValues": attr_values,
+    }
+    if attr_names:
+        update_kwargs["ExpressionAttributeNames"] = attr_names
+
+    table.update_item(**update_kwargs)
+
+    return json_response(200, {"message": "Session updated successfully"})
+
+
+def handle_delete_session(event, group_id, session_id):
+    user = get_current_user(event)
+    if not user:
+        return json_response(401, {"error": "Authentication required"})
+
+    session = get_item_by_id(session_id)
+    if not session or session.get("entityType") != "session" or session.get("groupId") != group_id:
+        return json_response(404, {"error": "Session not found"})
+
+    is_creator = session.get("createdBy") == user["userId"]
+    is_organizer = bool(scan_by_entity(
+        "membership",
+        Attr("groupId").eq(group_id) & Attr("userId").eq(user["userId"]) & Attr("role").eq("organizer")
+    ))
+
+    if not is_creator and not is_organizer:
+        return json_response(403, {"error": "Only the session creator or group organizer can delete sessions"})
+
+    table.delete_item(Key={"id": session_id})
+
+    return json_response(200, {"message": "Session deleted successfully"})
+
+
+# ---------------------------------------------------------------------------
+# My Groups handler
+# ---------------------------------------------------------------------------
+
+def handle_my_groups(event):
+    user = get_current_user(event)
+    if not user:
+        return json_response(401, {"error": "Authentication required"})
+
+    memberships = scan_by_entity("membership", Attr("userId").eq(user["userId"]))
+    group_ids = [m.get("groupId") for m in memberships]
+
+    groups = []
+    all_memberships = scan_by_entity("membership")
+
+    for gid in group_ids:
+        group = get_item_by_id(gid)
+        if group and group.get("entityType") == "study_group":
+            member_count = len([m for m in all_memberships if m.get("groupId") == gid])
+            user_membership = next((m for m in memberships if m.get("groupId") == gid), {})
+            groups.append({
+                "id": group["id"],
+                "name": group.get("name"),
+                "subject": group.get("subject"),
+                "description": group.get("description", ""),
+                "maxMembers": group.get("maxMembers", MAX_GROUP_MEMBERS),
+                "memberCount": member_count,
+                "myRole": user_membership.get("role", "member"),
+                "createdAt": group.get("createdAt"),
+            })
+
+    groups.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
+    return json_response(200, {"groups": groups})
 
 
 # ---------------------------------------------------------------------------
@@ -655,79 +907,63 @@ def handle_dashboard(event):
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
-    if user["role"] == "employee":
-        # Get balance
-        balance = _get_balance_for_user(user["userId"])
-        balances = {
-            "annual": int(balance.get("annual", 20)) if balance else 20,
-            "sick": int(balance.get("sick", 10)) if balance else 10,
-            "unpaid": int(balance.get("unpaid", 30)) if balance else 30,
+    # My memberships
+    my_memberships = scan_by_entity("membership", Attr("userId").eq(user["userId"]))
+    my_group_ids = [m.get("groupId") for m in my_memberships]
+
+    # My groups count
+    total_groups = len(my_group_ids)
+    organized = len([m for m in my_memberships if m.get("role") == "organizer"])
+
+    # Upcoming sessions in my groups
+    all_sessions = scan_by_entity("session")
+    upcoming_sessions = [
+        s for s in all_sessions
+        if s.get("groupId") in my_group_ids and s.get("date", "") >= today
+    ]
+    upcoming_sessions.sort(key=lambda x: (x.get("date", ""), x.get("startTime", "")))
+
+    # Enrich sessions with group names
+    group_names = {}
+    for gid in my_group_ids:
+        g = get_item_by_id(gid)
+        if g:
+            group_names[gid] = g.get("name", "Unknown")
+
+    upcoming_list = [
+        {
+            "id": s["id"],
+            "title": s.get("title"),
+            "date": s.get("date"),
+            "startTime": s.get("startTime"),
+            "endTime": s.get("endTime"),
+            "location": s.get("location", ""),
+            "isOnline": s.get("isOnline", False),
+            "groupName": group_names.get(s.get("groupId"), ""),
+            "groupId": s.get("groupId"),
         }
+        for s in upcoming_sessions[:8]
+    ]
 
-        # Get leave requests
-        leaves = scan_by_entity("leave_request", Attr("userId").eq(user["userId"]))
+    # Sessions today
+    today_sessions = [s for s in upcoming_sessions if s.get("date") == today]
 
-        pending_count = len([l for l in leaves if l.get("status") == "pending"])
-        approved_count = len([l for l in leaves if l.get("status") == "approved"])
+    # Popular subjects
+    all_groups = scan_by_entity("study_group")
+    subject_counts = {}
+    for g in all_groups:
+        subj = g.get("subject", "other")
+        subject_counts[subj] = subject_counts.get(subj, 0) + 1
+    popular_subjects = sorted(subject_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
-        upcoming = [
-            l for l in leaves
-            if l.get("status") in ["approved", "pending"] and l.get("startDate", "") >= today
-        ]
-        upcoming.sort(key=lambda x: x.get("startDate", ""))
-
-        return json_response(200, {
-            "role": "employee",
-            "balances": balances,
-            "pendingCount": pending_count,
-            "approvedCount": approved_count,
-            "upcomingLeaves": [
-                {
-                    "id": l.get("id"),
-                    "leaveType": l.get("leaveType"),
-                    "startDate": l.get("startDate"),
-                    "endDate": l.get("endDate"),
-                    "status": l.get("status"),
-                    "days": l.get("days"),
-                }
-                for l in upcoming[:5]
-            ],
-        })
-
-    else:
-        # Manager dashboard
-        all_leaves = scan_by_entity("leave_request")
-
-        pending_approvals = [l for l in all_leaves if l.get("status") == "pending"]
-        on_leave_today = [
-            l for l in all_leaves
-            if l.get("status") == "approved"
-            and l.get("startDate", "") <= today
-            and l.get("endDate", "") >= today
-        ]
-
-        total = len(all_leaves)
-        approved = len([l for l in all_leaves if l.get("status") == "approved"])
-        rejected = len([l for l in all_leaves if l.get("status") == "rejected"])
-
-        return json_response(200, {
-            "role": "manager",
-            "pendingApprovals": len(pending_approvals),
-            "teamOnLeaveToday": [
-                {
-                    "employeeName": l.get("employeeName"),
-                    "leaveType": l.get("leaveType"),
-                    "endDate": l.get("endDate"),
-                }
-                for l in on_leave_today
-            ],
-            "leaveStats": {
-                "total": total,
-                "approved": approved,
-                "rejected": rejected,
-                "pending": len(pending_approvals),
-            },
-        })
+    return json_response(200, {
+        "totalGroups": total_groups,
+        "organizedGroups": organized,
+        "todaySessions": len(today_sessions),
+        "totalUpcomingSessions": len(upcoming_sessions),
+        "upcomingSessions": upcoming_list,
+        "popularSubjects": [{"subject": s, "count": c} for s, c in popular_subjects],
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -783,12 +1019,12 @@ def lambda_handler(event, context):
     http_method = event.get("httpMethod", "GET")
     path = event.get("path", "/")
 
-    # CORS preflight — first
+    # CORS preflight
     if http_method == "OPTIONS":
         return json_response(200, {"message": "OK"})
 
     try:
-        # ---- PUBLIC routes (before auth check) ----
+        # ---- PUBLIC routes ----
         if path == "/subscribe" and http_method == "POST":
             return handle_subscribe(event)
         if path == "/subscribers" and http_method == "GET":
@@ -798,33 +1034,56 @@ def lambda_handler(event, context):
         if path == "/auth/login" and http_method == "POST":
             return handle_login(event)
 
-        # ---- PROTECTED routes (auth required) ----
-
-        # Leave routes
-        if path == "/leaves" and http_method == "GET":
-            return handle_get_leaves(event)
-        if path == "/leaves" and http_method == "POST":
-            return handle_create_leave(event)
-        if re.match(r"^/leaves/[^/]+/approve$", path) and http_method == "PUT":
-            request_id = path.split("/")[2]
-            return handle_approve_leave(event, request_id)
-        if re.match(r"^/leaves/[^/]+$", path) and http_method == "GET":
-            request_id = path.split("/")[2]
-            return handle_get_leave(event, request_id)
-        if re.match(r"^/leaves/[^/]+$", path) and http_method == "DELETE":
-            request_id = path.split("/")[2]
-            return handle_delete_leave(event, request_id)
-
-        # Employee routes
-        if path == "/employees" and http_method == "GET":
-            return handle_get_employees(event)
-        if re.match(r"^/employees/[^/]+/balance$", path) and http_method == "GET":
-            employee_id = path.split("/")[2]
-            return handle_get_employee_balance(event, employee_id)
+        # ---- PROTECTED routes ----
 
         # Dashboard
         if path == "/dashboard" and http_method == "GET":
             return handle_dashboard(event)
+
+        # My groups
+        if path == "/my-groups" and http_method == "GET":
+            return handle_my_groups(event)
+
+        # Groups
+        if path == "/groups" and http_method == "GET":
+            return handle_get_groups(event)
+        if path == "/groups" and http_method == "POST":
+            return handle_create_group(event)
+
+        # Group detail + join/leave
+        if re.match(r"^/groups/[^/]+/join$", path) and http_method == "POST":
+            group_id = path.split("/")[2]
+            return handle_join_group(event, group_id)
+        if re.match(r"^/groups/[^/]+/leave$", path) and http_method == "DELETE":
+            group_id = path.split("/")[2]
+            return handle_leave_group(event, group_id)
+
+        # Sessions
+        if re.match(r"^/groups/[^/]+/sessions$", path) and http_method == "GET":
+            group_id = path.split("/")[2]
+            return handle_get_sessions(event, group_id)
+        if re.match(r"^/groups/[^/]+/sessions$", path) and http_method == "POST":
+            group_id = path.split("/")[2]
+            return handle_create_session(event, group_id)
+        if re.match(r"^/groups/[^/]+/sessions/[^/]+$", path) and http_method == "PUT":
+            group_id = path.split("/")[2]
+            session_id = path.split("/")[4]
+            return handle_update_session(event, group_id, session_id)
+        if re.match(r"^/groups/[^/]+/sessions/[^/]+$", path) and http_method == "DELETE":
+            group_id = path.split("/")[2]
+            session_id = path.split("/")[4]
+            return handle_delete_session(event, group_id, session_id)
+
+        # Group CRUD (after more specific routes)
+        if re.match(r"^/groups/[^/]+$", path) and http_method == "GET":
+            group_id = path.split("/")[2]
+            return handle_get_group(event, group_id)
+        if re.match(r"^/groups/[^/]+$", path) and http_method == "PUT":
+            group_id = path.split("/")[2]
+            return handle_update_group(event, group_id)
+        if re.match(r"^/groups/[^/]+$", path) and http_method == "DELETE":
+            group_id = path.split("/")[2]
+            return handle_delete_group(event, group_id)
 
         return json_response(404, {"error": f"Route not found: {http_method} {path}"})
 

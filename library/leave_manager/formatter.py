@@ -1,196 +1,206 @@
 """
-Leave Formatter - formats leave data for display and export.
+Schedule Formatter - formats study schedules, group info, and session data for display and export.
 """
 
 import csv
 import io
 from datetime import datetime, timedelta
-import calendar
 
 
-class LeaveFormatter:
-    """Formats leave requests, balances, and calendars for display."""
+class ScheduleFormatter:
+    """Formats study group sessions, schedules, and reports for display."""
+
+    DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
     @staticmethod
-    def format_request_summary(request):
+    def format_session_summary(session):
         """
-        Format a leave request into a readable summary string.
+        Format a study session into a readable summary string.
 
         Args:
-            request: dict with leaveType, startDate, endDate, status, reason, employeeName
+            session: dict with title, date, startTime, endTime, location, groupName
 
         Returns:
             Formatted summary string
         """
-        employee = request.get("employeeName", "Unknown")
-        leave_type = request.get("leaveType", "unknown").capitalize()
-        start = request.get("startDate", "N/A")
-        end = request.get("endDate", "N/A")
-        status = request.get("status", "unknown").upper()
-        reason = request.get("reason", "No reason provided")
+        title = session.get("title", "Untitled Session")
+        date = session.get("date", "N/A")
+        start = session.get("startTime", "N/A")
+        end = session.get("endTime", "N/A")
+        location = session.get("location", "Not specified")
+        group_name = session.get("groupName", "Unknown Group")
+        is_online = session.get("isOnline", False)
 
         return (
-            f"Leave Request Summary\n"
+            f"Study Session Summary\n"
             f"{'=' * 40}\n"
-            f"Employee : {employee}\n"
-            f"Type     : {leave_type} Leave\n"
-            f"Period   : {start} to {end}\n"
-            f"Status   : {status}\n"
-            f"Reason   : {reason}\n"
+            f"Title    : {title}\n"
+            f"Group    : {group_name}\n"
+            f"Date     : {date}\n"
+            f"Time     : {start} - {end}\n"
+            f"Location : {'Online' if is_online else location}\n"
             f"{'=' * 40}"
         )
 
     @staticmethod
-    def format_balance_report(employee_name, balances):
+    def format_group_report(group_name, subject, members, sessions):
         """
-        Format leave balances into a readable report.
+        Format a study group report with members and session summary.
 
         Args:
-            employee_name: name of the employee
-            balances: dict of leave type to remaining days
+            group_name: name of the study group
+            subject: the subject area
+            members: list of member dicts with username and role
+            sessions: list of session dicts
 
         Returns:
-            Formatted balance report string
+            Formatted report string
         """
-        defaults = {"annual": 20, "sick": 10, "unpaid": 30}
-
         lines = [
-            f"Leave Balance Report - {employee_name}",
-            "=" * 45,
-            f"{'Type':<15} {'Used':<10} {'Remaining':<10} {'Total':<10}",
-            "-" * 45,
-        ]
-
-        for leave_type in ["annual", "sick", "unpaid"]:
-            total = defaults.get(leave_type, 0)
-            remaining = balances.get(leave_type, 0)
-            used = total - remaining
-            lines.append(
-                f"{leave_type.capitalize():<15} {used:<10} {remaining:<10} {total:<10}"
-            )
-
-        lines.append("=" * 45)
-        return "\n".join(lines)
-
-    @staticmethod
-    def format_team_calendar(requests, month):
-        """
-        Format a simple team calendar showing who is on leave.
-
-        Args:
-            requests: list of leave request dicts
-            month: month string in YYYY-MM format
-
-        Returns:
-            Formatted calendar string
-        """
-        try:
-            year, mon = map(int, month.split("-"))
-        except (ValueError, AttributeError):
-            return "Invalid month format. Use YYYY-MM"
-
-        cal = calendar.Calendar()
-        days_in_month = calendar.monthrange(year, mon)[1]
-        month_name = calendar.month_name[mon]
-
-        lines = [
-            f"Team Leave Calendar - {month_name} {year}",
+            f"Study Group Report - {group_name}",
             "=" * 50,
+            f"Subject  : {subject.capitalize() if subject else 'N/A'}",
+            f"Members  : {len(members)}",
+            f"Sessions : {len(sessions)}",
+            "",
+            "Members:",
+            "-" * 30,
         ]
 
-        # Build day-to-employees mapping
-        day_leaves = {}
-        for req in requests:
-            if req.get("status") == "rejected":
-                continue
-            try:
-                start = datetime.strptime(req["startDate"], "%Y-%m-%d").date()
-                end = datetime.strptime(req["endDate"], "%Y-%m-%d").date()
-            except (ValueError, KeyError):
-                continue
+        for m in members:
+            role_label = " (Organizer)" if m.get("role") == "organizer" else ""
+            lines.append(f"  - {m.get('username', 'Unknown')}{role_label}")
 
-            current = start
-            while current <= end:
-                if current.year == year and current.month == mon and current.weekday() < 5:
-                    day_key = current.day
-                    if day_key not in day_leaves:
-                        day_leaves[day_key] = []
-                    name = req.get("employeeName", "Unknown")
-                    leave_type = req.get("leaveType", "leave")
-                    day_leaves[day_key].append(f"{name} ({leave_type})")
-                current += timedelta(days=1)
+        lines.append("")
+        lines.append("Upcoming Sessions:")
+        lines.append("-" * 30)
 
-        for day in range(1, days_in_month + 1):
-            date_obj = datetime(year, mon, day).date()
-            if date_obj.weekday() >= 5:
-                continue
-            day_name = date_obj.strftime("%a")
-            date_str = f"{day:2d} {day_name}"
-            if day in day_leaves:
-                people = ", ".join(day_leaves[day])
-                lines.append(f"  {date_str} | {people}")
-            else:
-                lines.append(f"  {date_str} |")
+        if sessions:
+            for s in sessions:
+                lines.append(
+                    f"  {s.get('date', 'N/A')} | {s.get('startTime', '')}-{s.get('endTime', '')} | {s.get('title', 'Untitled')}"
+                )
+        else:
+            lines.append("  No upcoming sessions scheduled")
 
         lines.append("=" * 50)
         return "\n".join(lines)
 
     @staticmethod
-    def to_csv(requests):
+    def format_weekly_schedule(sessions, week_start_date):
         """
-        Convert a list of leave requests to CSV format.
+        Format a weekly schedule showing all sessions organized by day.
 
         Args:
-            requests: list of leave request dicts
+            sessions: list of session dicts
+            week_start_date: start date string YYYY-MM-DD (Monday)
+
+        Returns:
+            Formatted weekly schedule string
+        """
+        try:
+            if isinstance(week_start_date, str):
+                start = datetime.strptime(week_start_date, "%Y-%m-%d").date()
+            else:
+                start = week_start_date
+        except (ValueError, AttributeError):
+            return "Invalid date format. Use YYYY-MM-DD"
+
+        start = start - timedelta(days=start.weekday())
+
+        lines = [
+            f"Weekly Study Schedule",
+            f"Week of {start.strftime('%B %d, %Y')}",
+            "=" * 55,
+        ]
+
+        for i in range(7):
+            day_date = start + timedelta(days=i)
+            day_name = ScheduleFormatter.DAYS_OF_WEEK[i]
+            date_str = day_date.strftime("%Y-%m-%d")
+
+            day_sessions = [s for s in sessions if s.get("date") == date_str]
+            day_sessions.sort(key=lambda x: x.get("startTime", ""))
+
+            lines.append(f"\n{day_name} ({date_str}):")
+            if day_sessions:
+                for s in day_sessions:
+                    location = "Online" if s.get("isOnline") else s.get("location", "TBD")
+                    lines.append(
+                        f"  {s.get('startTime', '')}-{s.get('endTime', '')} | "
+                        f"{s.get('title', 'Untitled')} @ {location}"
+                    )
+            else:
+                lines.append("  No sessions scheduled")
+
+        lines.append("\n" + "=" * 55)
+        return "\n".join(lines)
+
+    @staticmethod
+    def to_csv(sessions):
+        """
+        Convert a list of sessions to CSV format.
+
+        Args:
+            sessions: list of session dicts
 
         Returns:
             CSV string
         """
-        if not requests:
+        if not sessions:
             return ""
 
         output = io.StringIO()
         fields = [
-            "requestId", "employeeName", "leaveType",
-            "startDate", "endDate", "status", "reason",
+            "sessionId", "title", "groupName", "date",
+            "startTime", "endTime", "location", "isOnline",
         ]
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
 
-        for req in requests:
-            writer.writerow(req)
+        for s in sessions:
+            row = {
+                "sessionId": s.get("id", s.get("sessionId", "")),
+                "title": s.get("title", ""),
+                "groupName": s.get("groupName", ""),
+                "date": s.get("date", ""),
+                "startTime": s.get("startTime", ""),
+                "endTime": s.get("endTime", ""),
+                "location": s.get("location", ""),
+                "isOnline": s.get("isOnline", False),
+            }
+            writer.writerow(row)
 
         return output.getvalue()
 
     @staticmethod
-    def format_approval_notification(request, action, comments=""):
+    def format_session_notification(session, group_name, action="created"):
         """
-        Format an approval/rejection notification message.
+        Format a session notification message.
 
         Args:
-            request: the leave request dict
-            action: 'approved' or 'rejected'
-            comments: optional manager comments
+            session: the session dict
+            group_name: name of the study group
+            action: 'created', 'updated', or 'cancelled'
 
         Returns:
             Formatted notification string
         """
-        employee = request.get("employeeName", "Employee")
-        leave_type = request.get("leaveType", "").capitalize()
-        start = request.get("startDate", "N/A")
-        end = request.get("endDate", "N/A")
+        title = session.get("title", "Study Session")
+        date = session.get("date", "N/A")
+        start = session.get("startTime", "N/A")
+        end = session.get("endTime", "N/A")
+        location = session.get("location", "Not specified")
 
         msg = (
-            f"Leave Request {action.upper()}\n"
+            f"Study Session {action.upper()}\n"
             f"{'-' * 35}\n"
-            f"Employee : {employee}\n"
-            f"Type     : {leave_type} Leave\n"
-            f"Period   : {start} to {end}\n"
-            f"Decision : {action.capitalize()}\n"
+            f"Group    : {group_name}\n"
+            f"Session  : {title}\n"
+            f"Date     : {date}\n"
+            f"Time     : {start} - {end}\n"
+            f"Location : {location}\n"
+            f"{'-' * 35}"
         )
 
-        if comments:
-            msg += f"Comments : {comments}\n"
-
-        msg += f"{'-' * 35}"
         return msg
