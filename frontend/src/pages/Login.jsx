@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { BookOpen } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -11,6 +11,10 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    api.post('/auth/seed').catch(() => {});
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

@@ -251,6 +251,46 @@ def handle_register(event):
     })
 
 
+def handle_seed(event):
+    """Seed demo users if they don't already exist."""
+    demo_users = [
+        {
+            "username": "Alice Johnson",
+            "email": "alice@studysync.demo",
+            "password": "Student123!",
+            "university": "National College of Ireland",
+            "subjects": ["computer_science", "mathematics", "data_science"],
+        },
+        {
+            "username": "Bob Smith",
+            "email": "bob@studysync.demo",
+            "password": "Student123!",
+            "university": "National College of Ireland",
+            "subjects": ["physics", "engineering", "statistics"],
+        },
+    ]
+    created = []
+    for u in demo_users:
+        existing = scan_by_entity("user", Attr("email").eq(u["email"]))
+        if existing:
+            continue
+        user_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+        user_item = to_decimal({
+            "id": user_id,
+            "entityType": "user",
+            "username": u["username"],
+            "email": u["email"],
+            "passwordHash": hash_password(u["password"]),
+            "university": u["university"],
+            "subjects": u["subjects"],
+            "createdAt": now,
+        })
+        table.put_item(Item=user_item)
+        created.append(u["email"])
+    return json_response(200, {"message": f"Seeded {len(created)} demo users", "created": created})
+
+
 def handle_login(event):
     body = parse_body(event)
     email = body.get("email", "").strip().lower()
@@ -1029,6 +1069,8 @@ def lambda_handler(event, context):
             return handle_subscribe(event)
         if path == "/subscribers" and http_method == "GET":
             return handle_get_subscribers(event)
+        if path == "/auth/seed" and http_method == "POST":
+            return handle_seed(event)
         if path == "/auth/register" and http_method == "POST":
             return handle_register(event)
         if path == "/auth/login" and http_method == "POST":
